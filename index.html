@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>대통령 키우기 — 무설치 풀버전 v2</title>
+  <meta name="description" content="관리자 2단계 생성/징계, 소셜 로그인(모의), 아이디/비번 변경 포함" />
+  <!-- React / ReactDOM / Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body{background:linear-gradient(#fafafa,#fff);} .card{box-shadow:0 2px 12px #0001}
+    .btn{ @apply px-3 py-2 rounded-xl; } .btn-black{ @apply text-white; background:#111 }
+    .btn-gray{ @apply bg-gray-100; } .btn-red{ @apply text-white; background:#ef4444 }
+    .badge{ @apply text-[11px] px-2 py-0.5 rounded-full bg-gray-100; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const {useState,useEffect,useMemo} = React;
+
+// ---------- DB & Utils ----------
+const DBKEY="prez_full_db_v2";
+const now=()=>new Date().toISOString();
+const hash=(s)=>btoa(unescape(encodeURIComponent(s))); // demo only
+const COUNTRIES=[
+  {id:"krd",name:"대한공화국"}, {id:"prk",name:"조선개혁주의공화국"},
+  {id:"jp",name:"월국"},{id:"cn",name:"인나라"},
+  {id:"tw",name:"인나라 민주공화국"},{id:"vn",name:"월남국"},{id:"th",name:"이유타국"}
+];
+const BASE_PARTIES=[
+  {id:"prog1",name:"개혁미래당",tone:"progressive"},
+  {id:"prog2",name:"시민혁신진보당",tone:"progressive"},
+  {id:"cons1",name:"자유보수연합",tone:"conservative"},
+  {id:"cons2",name:"국민안보보수당",tone:"conservative"}
+];
+const STORE_ITEMS=[
+  {id:"boost_pack",name:"부스트팩(+능력치)",price:1000},
+  {id:"ad_ticket",name:"광고권(+캠페인)",price:1500},
+  {id:"gold_badge",name:"골드 뱃지(프로필)",price:3000},
+];
+const ageFrom=(yyyy_mm_dd)=>{
+  if(!yyyy_mm_dd) return 0;
+  const [y,m,d]=yyyy_mm_dd.split("-").map(Number);
+  const today=new Date(); let age=today.getFullYear()-y;
+  const mOk=(today.getMonth()+1)>m || ((today.getMonth()+1)===m && today.getDate()>=d);
+  return mOk?age:age-1;
+};
+
+function loadDB(){
+  try{
+    return JSON.parse(localStorage.getItem(DBKEY)) || {
+      users: {}, // username -> {pass,birth,country,gender,partyId,ownedItems:[],money:0,role:'user',status:'active',social:{google:null,naver:null},createdParties:[]}
+      admin: null, // {username}
+      parties: [...BASE_PARTIES],
+      elections: { open:false, candidates:[], votes:{}, createdAt:null }
+    };
+  }catch{return null}
+}
+function saveDB(db){ localStorage.setItem(DBKEY, JSON.stringify(db)); }
+function resetDB(){ localStorage.removeItem(DBKEY); location.reload(); }
+
+function renameUser(db, oldName, newName){
+  if(!db.users[oldName] || db.users[newName]) return false;
+  db.users[newName] = db.users[oldName];
+  delete db.users[oldName];
+  if(db.admin?.username===oldName){ db.admin.username=newName; }
+  // move votes mapping
+  if(db.elections?.votes?.[oldName]){
+    db.elections.votes[newName]=db.elections.votes[oldName];
+    delete db.elections.votes[oldName];
+  }
+  return true;
+}
+
+// ---------- UI Components ----------
+function Section({title,children,right}){
+  return <div className="p-4 rounded-2xl card bg-white border">
+    <div className="flex justify-between items-center mb-2">
+      <div className="font-semibold">{title}</div>
+      <div>{right}</div>
+    </div>
+    {children}
+  </div>;
+}
+
+function Row({label,children}){
+  return <div className="flex items-center gap-2 my-1 text-sm">
+    <div className="w-28 text-gray-500">{label}</div>
+    <div className="flex-1">{children}</div>
+  </div>;
+}
+
+// --------- Admin Gate (2-step) ---------
+function AdminGate({onDone}){
+  const [step,setStep]=useState(1);
+  const [username,setUsername]=useState("");
+  const [password,setPassword]=useState("");
+  const [msg,setMsg]=useState("");
+  const db=loadDB();
+
+  function nextStep(){
+    if(!/^[a-zA-Z0-9_]{3,16}$/.test(username)){ setMsg("아이디는 영문/숫자/_ 3~16자"); return; }
+    if(db.users[username]){ setMsg("이미 존재하는 아이디입니다."); return; }
+    setStep(2); setMsg("");
+  }
+  function finalize(){
+    if(!password){ setMsg("비밀번호를 입력하세요."); return; }
+    db.users[username]={ pass:hash(password), role:'admin', birth:'1970-01-01', country:null, gender:null, partyId:null, ownedItems:[], money:0, status:'active', social:{google:null,naver:null}, createdParties:[] };
+    db.admin={username};
+    saveDB(db);
+    onDone(username);
+  }
+
+  return (
+    <Section title="관리자 생성 (2단계)">
+      {step===1 && <>
+        <Row label="관리자 아이디"><input className="border rounded-xl px-3 py-2 w-full" value={username} onChange={e=>setUsername(e.target.value)} placeholder="예: admin_01"/></Row>
+        <div className="mt-2"><button className="btn btn-black" onClick={nextStep}>다음(비밀번호 설정)</button></div>
+      </>}
+      {step===2 && <>
+        <div className="text-sm mb-1">관리자 아이디: <b>{username}</b></div>
+        <Row label="비밀번호"><input type="password" className="border rounded-xl px-3 py-2 w-full" value={password} onChange={e=>setPassword(e.target.value)} placeholder="비밀번호"/></Row>
+        <div className="mt-2 flex gap-2">
+          <button className="btn btn-black" onClick={finalize}>관리자 만들기</button>
+          <button className="btn btn-gray" onClick={()=>setStep(1)}>아이디 다시</button>
+        </div>
+      </>}
+      {msg && <div className="text-xs text-rose-600 mt-2">{msg}</div>}
+      <div className="text-xs text-gray-500 mt-2">* 요구사항: 관리자 버튼으로 로그인 → 다음 단계에서 비밀번호로 확정</div>
+    </Section>
+  );
+}
+
+// --------- Auth & Social (mock) ----------
+function AuthPanel({user,setUser}){
+  const [tab,setTab]=useState("login");
+  const [username,setUsername]=useState("");
+  const [password,setPassword]=useState("");
+  const [birth,setBirth]=useState("");
+  const [msg,setMsg]=useState("");
+  const db=loadDB();
+
+  const hasAdmin = !!db.admin;
+  function login(){
+    const u=db.users[username];
+    if(!u||u.pass!==hash(password)){ setMsg("아이디/비밀번호 오류"); return; }
+    setUser(username);
+  }
+  function register(){
+    if(db.users[username]){ setMsg("이미 존재하는 아이디"); return; }
+    if(!/^[a-zA-Z0-9_]{3,16}$/.test(username)){ setMsg("아이디는 영문/숫자/_ 3~16자"); return; }
+    if(!birth){ setMsg("생년월일 필요"); return; }
+    db.users[username]={pass:hash(password),birth,country:null,gender:null,partyId:null,ownedItems:[],money:0,role:'user',status:'active',social:{google:null,naver:null},createdParties:[]};
+    saveDB(db); setMsg("가입 완료 → 로그인 탭"); setTab("login");
+  }
+
+  function socialLogin(kind){
+    // Mock: 이메일 입력 받아 계정 생성/연결
+    const email = prompt(kind+" 이메일 입력:");
+    if(!email) return;
+    // find existing by social email
+    let userFound = Object.keys(db.users).find(u => db.users[u].social?.[kind]===email);
+    if(userFound){ setUser(userFound); return; }
+    // if logged-in, link to current user
+    if(user){ db.users[user].social[kind]=email; saveDB(db); alert(kind+" 계정 연결 완료"); return; }
+    // else create a new user
+    let base = (kind==="google"?"gg_":"nv_") + (email.split("@")[0]||"user");
+    let name = base; let i=1;
+    while(db.users[name]){ name = base + i++; }
+    db.users[name] = { pass:hash(Math.random().toString(36).slice(2,10)), birth:null, country:null, gender:null, partyId:null, ownedItems:[], money:0, role:'user', status:'active', social:{google:null,naver:null}, createdParties:[] };
+    db.users[name].social[kind]=email;
+    saveDB(db); setUser(name);
+  }
+
+  return (
+    <Section title="가입 / 로그인" right={<div className="flex gap-2 text-xs">
+      {!hasAdmin && <span className="badge">관리자 미설정</span>}
+      <button className="px-2 py-1 rounded-lg bg-gray-100" onClick={()=>{ if(confirm('DB 초기화?')) resetDB(); }}>초기화</button>
+    </div>}>
+      <div className="flex gap-2 mb-2 text-sm">
+        <button className={`px-3 py-1 rounded-xl ${tab==="login"?"bg-black text-white":"bg-gray-100"}`} onClick={()=>setTab("login")}>로그인</button>
+        <button className={`px-3 py-1 rounded-xl ${tab==="register"?"bg-black text-white":"bg-gray-100"}`} onClick={()=>setTab("register")}>회원가입</button>
+        {!hasAdmin && <button className={`px-3 py-1 rounded-xl ${tab==="admin"?"bg-black text-white":"bg-gray-100"}`} onClick={()=>setTab("admin")}>관리자 버튼</button>}
+      </div>
+
+      {tab==="login" && (<div className="grid sm:grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <input className="border rounded-xl px-3 py-2 w-full" placeholder="아이디" value={username} onChange={e=>setUsername(e.target.value)}/>
+          <input className="border rounded-xl px-3 py-2 w-full" placeholder="비밀번호" type="password" value={password} onChange={e=>setPassword(e.target.value)}/>
+          <button className="btn btn-black" onClick={login}>로그인</button>
+          {msg && <div className="text-xs text-rose-600">{msg}</div>}
+        </div>
+        <div className="space-y-2">
+          <div className="text-xs text-gray-500">소셜 로그인(모의)</div>
+          <button className="btn btn-gray w-full" onClick={()=>socialLogin('google')}>Google로 로그인</button>
+          <button className="btn btn-gray w-full" onClick={()=>socialLogin('naver')}>Naver로 로그인</button>
+          <div className="text-[11px] text-gray-400">* 실제 OAuth가 아닌 데모 링크입니다. 이메일을 입력받아 계정 생성/연결만 합니다.</div>
+        </div>
+      </div>)}
+
+      {tab==="register" && (<div className="grid sm:grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <input className="border rounded-xl px-3 py-2 w-full" placeholder="아이디(영문/숫자/_ 3~16자)" value={username} onChange={e=>setUsername(e.target.value)}/>
+          <input className="border rounded-xl px-3 py-2 w-full" placeholder="비밀번호" type="password" value={password} onChange={e=>setPassword(e.target.value)}/>
+          <label className="text-xs text-gray-500">생년월일</label>
+          <input className="border rounded-xl px-3 py-2 w-full" type="date" value={birth} onChange={e=>setBirth(e.target.value)}/>
+          <button className="btn btn-black" onClick={register}>가입하기</button>
+          {msg && <div className="text-xs text-rose-600">{msg}</div>}
+        </div>
+        <div className="text-xs text-gray-500">가입 후 국가/성별/정당 선택이 가능합니다.</div>
+      </div>)}
+
+      {tab==="admin" && !hasAdmin && <AdminGate onDone={(u)=>{ alert('관리자 생성 완료. 이제 관리자 계정으로 로그인하세요.'); setTab('login'); setUsername(u); }}/>}      
+    </Section>
+  );
+}
+
+// --------- Settings (change id/password, link social) ----------
+function Settings({user,setUser}){
+  const db=loadDB(); const u=db.users[user];
+  const [newId,setNewId]=useState(user);
+  const [newPw,setNewPw]=useState("");
+  function changeId(){
+    if(newId===user) return;
+    if(!/^[a-zA-Z0-9_]{3,16}$/.test(newId)){ alert("아이디 규칙 위반"); return; }
+    if(!renameUser(db, user, newId)){ alert("아이디 변경 실패(중복?)"); return; }
+    saveDB(db); setUser(newId); alert("아이디 변경 완료");
+  }
+  function changePw(){
+    if(!newPw){ alert("비밀번호 입력"); return; }
+    u.pass=hash(newPw); saveDB(db); alert("비밀번호 변경 완료");
+  }
+  function unlink(kind){
+    u.social[kind]=null; saveDB(db); alert(kind+" 연결 해제");
+  }
+  return (
+    <Section title="계정 설정(아이디/비번/소셜 연결)">
+      <Row label="현재 아이디"><b>{user}</b></Row>
+      <Row label="새 아이디"><input className="border rounded-xl px-3 py-2 w-full" value={newId} onChange={e=>setNewId(e.target.value)}/></Row>
+      <div className="flex gap-2 mb-2"><button className="btn btn-gray" onClick={changeId}>아이디 변경</button></div>
+      <Row label="새 비밀번호"><input type="password" className="border rounded-xl px-3 py-2 w-full" value={newPw} onChange={e=>setNewPw(e.target.value)}/></Row>
+      <div className="flex gap-2"><button className="btn btn-gray" onClick={changePw}>비밀번호 변경</button></div>
+      <div className="mt-3 text-sm">소셜 연결</div>
+      <div className="text-xs text-gray-500">Google: {u.social.google||"-"} <button className="btn btn-gray text-xs" onClick={()=>unlink('google')}>해제</button></div>
+      <div className="text-xs text-gray-500">Naver: {u.social.naver||"-"} <button className="btn btn-gray text-xs" onClick={()=>unlink('naver')}>해제</button></div>
+    </Section>
+  );
+}
+
+// --------- Onboarding (user only) ----------
+function Onboard({user}){
+  const db=loadDB(); const u=db.users[user];
+  if(u.role==='admin') return null; // admin cannot play
+  const [country,setCountry]=useState(u.country||"");
+  function saveCountry(){
+    u.country=country||COUNTRIES[0].id; saveDB(db); alert("국가 저장");
+  }
+  function setGender(g){ u.gender=g; saveDB(db); }
+  function setParty(pid){ u.partyId=pid; saveDB(db); }
+
+  return (
+    <div className="grid md:grid-cols-3 gap-4">
+      <Section title="1) 국가 선택 (먼저 로그인 필요)">
+        <select className="border rounded-xl px-3 py-2 w-full" value={country} onChange={e=>setCountry(e.target.value)}>
+          <option value="">국가를 선택…</option>
+          {COUNTRIES.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <button className="mt-2 btn btn-black" onClick={saveCountry}>저장</button>
+      </Section>
+      <Section title="2) 성별 선택">
+        <div className="flex gap-2">
+          <button className={`btn ${u.gender==='남'?'btn-black':'btn-gray'}`} onClick={()=>setGender('남')}>남</button>
+          <button className={`btn ${u.gender==='여'?'btn-black':'btn-gray'}`} onClick={()=>setGender('여')}>여</button>
+        </div>
+        <div className="text-xs text-gray-500 mt-2">현재: {u.gender||"-"}</div>
+      </Section>
+      <Section title="3) 정당 선택">
+        <div className="grid gap-2">
+          {db.parties.map(p=>(
+            <button key={p.id} className={`btn ${u.partyId===p.id?'btn-black':'btn-gray'} text-left`} onClick={()=>setParty(p.id)}>
+              <div className="font-semibold">{p.name}</div>
+              <div className="text-[11px] text-gray-500">{p.tone}</div>
+            </button>
+          ))}
+        </div>
+        <div className="text-xs text-gray-500 mt-2">현재: {db.parties.find(p=>p.id===u.partyId)?.name || "-"}</div>
+      </Section>
+    </div>
+  );
+}
+
+// --------- Create Party (40+) (user only) ----------
+function CreateParty({user}){
+  const db=loadDB(); const u=db.users[user];
+  if(u.role==='admin') return null;
+  const age=ageFrom(u.birth);
+  const [name,setName]=useState(""); const [tone,setTone]=useState("progressive");
+  function create(){
+    if(age<40){ alert("만 40세 이상만 정당 생성 가능"); return; }
+    if(!/^[가-힣a-zA-Z0-9 ]{2,18}$/.test(name)){ alert("정당명 2~18자"); return; }
+    const id="user_"+Date.now();
+    db.parties.push({id,name,tone}); u.createdParties.push(id); saveDB(db); alert("정당 생성 완료");
+  }
+  return (
+    <Section title="정당 생성 (만 40세 이상)">
+      <div className="text-sm mb-2">내 나이: <b>{age}</b> 세 {age>=40?"(가능)":"(불가)"}</div>
+      <input className="border rounded-xl px-3 py-2 w-full mb-2" placeholder="정당명" value={name} onChange={e=>setName(e.target.value)}/>
+      <select className="border rounded-xl px-3 py-2 w-full mb-2" value={tone} onChange={e=>setTone(e.target.value)}>
+        <option value="progressive">진보</option>
+        <option value="conservative">보수</option>
+        <option value="centrist">중도</option>
+      </select>
+      <button className="btn btn-black" onClick={create}>정당 만들기</button>
+    </Section>
+  );
+}
+
+// --------- Store (user only, enforce discipline) ----------
+function Store({user}){
+  const db=loadDB(); const u=db.users[user];
+  if(u.role==='admin') return null;
+  const [msg,setMsg]=useState("");
+  if(u.status==='banned'){ return <Section title="상점"><div className="text-sm text-rose-600">계정이 차단되어 이용할 수 없습니다.</div></Section> }
+  function addMoney(){ if(u.status==='muted'){ setMsg("활동정지 중에는 충전 불가"); return; } u.money+=5000; saveDB(db); setMsg("크레딧 +5,000"); }
+  function buy(id){
+    const item=STORE_ITEMS.find(i=>i.id===id);
+    if(u.status!=='active'){ setMsg("제재 중 구매 불가"); return; }
+    if(u.money<item.price){ setMsg("잔액 부족"); return; }
+    u.money-=item.price; u.ownedItems.push({id,paid:item.price,at:now()}); saveDB(db); setMsg(`결제 완료: ${item.name}`);
+  }
+  return (
+    <Section title="상점 / 결제(모의)">
+      <div className="text-sm mb-2">보유 크레딧: <b>{(u.money||0).toLocaleString()}</b></div>
+      <div className="flex gap-2 mb-3">
+        <button className="btn btn-black" onClick={addMoney}>크레딧 충전(+5,000)</button>
+      </div>
+      <div className="grid sm:grid-cols-3 gap-2">
+        {STORE_ITEMS.map(it=>(
+          <div key={it.id} className="p-3 rounded-xl bg-gray-50">
+            <div className="font-semibold text-sm">{it.name}</div>
+            <div className="text-xs text-gray-500 mb-2">{it.price.toLocaleString()}원</div>
+            <button className="btn btn-black text-xs" onClick={()=>buy(it.id)}>결제</button>
+          </div>
+        ))}
+      </div>
+      {msg && <div className="text-xs text-emerald-600 mt-2">{msg}</div>}
+      <div className="text-xs text-gray-500 mt-3">* 데모 결제</div>
+    </Section>
+  );
+}
+
+// --------- Elections (user vote; admin control) ----------
+function Elections({user}){
+  const db=loadDB(); const u=db.users[user];
+  const isAdmin = db.admin?.username===user;
+  const [_,force]=useState(0);
+  function addCandidate(){ const name=prompt("후보 이름"); if(!name) return; db.elections.candidates.push({id:"cand_"+Date.now(), name}); saveDB(db); force(x=>x+1); }
+  function toggleOpen(){ db.elections.open=!db.elections.open; if(db.elections.open){ db.elections.createdAt=now(); db.elections.votes={}; } saveDB(db); force(x=>x+1); }
+  function vote(id){
+    if(u.role==='admin'){ alert("관리자는 투표할 수 없습니다."); return; }
+    if(u.status!=='active'){ alert("제재 중 투표 불가"); return; }
+    if(!db.elections.open){ alert("선거가 열려있지 않습니다."); return; }
+    db.elections.votes[user]=id; saveDB(db); force(x=>x+1);
+  }
+  const tally = useMemo(()=>{
+    const counts={}; db.elections.candidates.forEach(c=>counts[c.id]=0);
+    Object.values(db.elections.votes).forEach(id=>{ if(counts[id]!==undefined) counts[id]++; });
+    return counts;
+  },[_,db.elections]);
+  const myVote = db.elections.votes[user];
+
+  return (
+    <div className="grid md:grid-cols-3 gap-4">
+      <Section title="선거 상태" right={isAdmin && <span className="badge">관리자</span>}>
+        <div className="text-sm">진행: <b>{db.elections.open? "열림":"닫힘"}</b></div>
+        <div className="text-xs text-gray-500">후보 수: {db.elections.candidates.length}</div>
+        {isAdmin && (
+          <div className="flex gap-2 mt-2">
+            <button className="btn btn-red" onClick={toggleOpen}>{db.elections.open?"선거 닫기":"선거 열기"}</button>
+            <button className="btn btn-black" onClick={addCandidate}>후보 추가</button>
+          </div>
+        )}
+      </Section>
+      <Section title="투표">
+        {!db.elections.open && <div className="text-xs text-gray-500">선거가 열리면 투표 가능</div>}
+        {db.elections.open && (
+          <div className="grid gap-2">
+            {db.elections.candidates.map(c=>(
+              <button key={c.id} className={`btn ${myVote===c.id?'btn-black':'btn-gray'}`} onClick={()=>vote(c.id)}>
+                {c.name} {myVote===c.id && "✓"}
+              </button>
+            ))}
+          </div>
+        )}
+      </Section>
+      <Section title="개표(실시간)">
+        <div className="grid gap-1 text-sm">
+          {db.elections.candidates.length===0 && <div className="text-xs text-gray-500">후보 없음</div>}
+          {db.elections.candidates.map(c=> (
+            <div key={c.id} className="flex justify-between">
+              <div>{c.name}</div>
+              <div>{tally[c.id]||0} 표</div>
+            </div>
+          ))}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// --------- Admin Member Management ----------
+function AdminMembers({user}){
+  const db=loadDB(); const isAdmin=db.admin?.username===user;
+  const [_,force]=useState(0);
+  if(!isAdmin) return null;
+  const names = Object.keys(db.users).sort();
+  function act(name, action){
+    const u=db.users[name];
+    if(!u) return;
+    if(action==='warn'){ u._warns=(u._warns||0)+1; }
+    if(action==='mute'){ u.status='muted'; u._muteUntil = new Date(Date.now()+3*24*3600*1000).toISOString(); }
+    if(action==='ban'){ u.status='banned'; }
+    if(action==='unban'){ u.status='active'; delete u._muteUntil; }
+    if(action==='resetpw'){ u.pass=hash('1234'); } // demo reset
+    saveDB(db); force(x=>x+1);
+  }
+  return (
+    <Section title="멤버 관리 / 징계">
+      <div className="text-xs text-gray-500 mb-2">관리자는 게임 참여 불가 — 멤버 열람/징계만 가능</div>
+      <div className="overflow-auto max-h-80">
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-gray-500"><th>아이디</th><th>역할</th><th>상태</th><th>국가</th><th>성별</th><th>정당</th><th>경고</th><th>액션</th></tr></thead>
+          <tbody>
+            {names.map(n=>{
+              const u=db.users[n];
+              return (
+                <tr key={n} className="border-t">
+                  <td className="py-1">{n}</td>
+                  <td>{u.role||'user'}</td>
+                  <td>{u.status||'active'} {u._muteUntil?`(~${u._muteUntil.slice(0,10)})`:''}</td>
+                  <td>{COUNTRIES.find(c=>c.id===u.country)?.name||'-'}</td>
+                  <td>{u.gender||'-'}</td>
+                  <td>{db.parties.find(p=>p.id===u.partyId)?.name||'-'}</td>
+                  <td>{u._warns||0}</td>
+                  <td className="py-1">
+                    <div className="flex gap-1 flex-wrap">
+                      <button className="px-2 py-1 rounded bg-yellow-500 text-white" onClick={()=>act(n,'warn')}>경고</button>
+                      <button className="px-2 py-1 rounded bg-amber-700 text-white" onClick={()=>act(n,'mute')}>정지(3일)</button>
+                      <button className="px-2 py-1 rounded bg-red-600 text-white" onClick={()=>act(n,'ban')}>차단</button>
+                      <button className="px-2 py-1 rounded bg-gray-500 text-white" onClick={()=>act(n,'unban')}>해제</button>
+                      <button className="px-2 py-1 rounded bg-gray-800 text-white" onClick={()=>act(n,'resetpw')}>비번초기화(1234)</button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
+
+// --------- App Root ----------
+function App(){
+  const [user,setUser]=useState(null);
+  const db=loadDB();
+  const u = user? db.users[user] : null;
+  const isAdmin = u?.role==='admin';
+
+  return (
+    <div className="max-w-6xl mx-auto py-6 space-y-4">
+      <div className="flex justify-between items-center">
+        <div className="text-xl font-bold">대통령 키우기 — 무설치 풀버전 v2</div>
+        <div className="text-sm flex items-center gap-2">
+          {user? (<>
+            <span><b>{user}</b> {isAdmin && <span className="badge">관리자</span>}</span>
+            <button className="btn btn-gray" onClick={()=>setUser(null)}>로그아웃</button>
+          </>) : (<span className="text-gray-500">로그인 필요</span>)}
+        </div>
+      </div>
+
+      <AuthPanel user={user} setUser={setUser}/>
+
+      {user && !isAdmin && <>
+        <Settings user={user} setUser={setUser}/>
+        <Onboard user={user}/>
+        <CreateParty user={user}/>
+        <Store user={user}/>
+      </>}
+
+      {user && <Elections user={user}/>}
+
+      {isAdmin && <>
+        <AdminMembers user={user}/>
+        <Section title="안내">
+          <div className="text-xs text-gray-500">관리자는 국가/정당/성별 선택 및 게임 이용 불가. 멤버 관리와 선거 열기/닫기만 가능합니다.</div>
+        </Section>
+      </>}
+
+      {!user && <div className="text-xs text-gray-500">* 로그인하면 기능이 열립니다. (소셜 로그인은 데모 방식)</div>}
+      <div className="text-xs text-gray-400">데모 주의: 브라우저 로컬 저장만 사용. 실제 결제/실서버 아님.</div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
